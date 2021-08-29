@@ -5,37 +5,52 @@ import {
   createEffect,
   sample,
   guard,
+  combine,
 } from "effector-root";
 import type { Store } from "effector-root";
-import { z, ZodError } from "zod";
-import type { ZodString, ZodErrorMap } from "zod";
-import { useStore } from "effector-react";
+import { combineEvents } from "patronum/combine-events";
+import { every } from "patronum/every";
+import * as Yup from "yup";
 
-export function isZodError(value: unknown): value is ZodError {
-  return value instanceof ZodError;
-}
+const schema = Yup.string()
+  .test({
+    test: (v) => (v ? v.length > 0 : false),
+    name: "required",
+    message: "Поле обязательное",
+  })
+  .min(5);
 
 export type Nullable<T> = T | null;
 
-const errorMap: ZodErrorMap = ({ code, path, message }) => {
-  console.log({ code, path, message });
-  return { message: "lol" };
-};
-
 type CreateTextInput = {
   name: string;
-  schema?: ZodString;
+  schema?: Yup.StringSchema;
+  formPrefix?: string;
   persist?: boolean;
 };
+
+/**
+ * TODO
+ * - Добавить isValidating
+ * - Добавить onBlur
+ * - Добавить публичный setValue, setError
+ * - Общий Reset
+ * - Добавить опциональные функции transform и normalize
+ */
 
 export const createTextInput = ({
   name,
   schema,
+  formPrefix = "",
   persist = false,
 }: CreateTextInput) => {
   const $ref = createStore<Nullable<HTMLInputElement>>(null);
   const $value = createStore<string>("");
-  const $error = createStore<Nullable<ZodError>>(null);
+  const $error = createStore<Nullable<Yup.ValidationError>>(null);
+  const $errorMessage = $error.map((err) => (err ? err.message : ""));
+  const $isRequiredError = $error.map((err) =>
+    err ? err.type === "required" : false
+  );
   const $isTouched = createStore<boolean>(false);
   const $isDirty = createStore<boolean>(false);
   const $isValid = $error.map((err) => err === null);
@@ -57,12 +72,17 @@ export const createTextInput = ({
   const _clearIsTouched = createEvent();
   $isTouched.on(_setIsTouched, () => true).reset(_clearIsTouched);
 
-  const validateFx = createEffect<string, void, ZodError>(async (value) => {
-    await schema?.parseAsync(value, {
-      path: [name],
-      errorMap,
-    });
-  });
+  const validateFx = createEffect<string, string, Yup.ValidationError>(
+    async (value) => {
+      if (schema) {
+        const parsedValue = (await schema.validate(value)) as
+          | Promise<string>
+          | string;
+        return parsedValue;
+      }
+      return value;
+    }
+  );
   const _clearError = createEvent();
   const validate = createEvent();
 
@@ -85,11 +105,13 @@ export const createTextInput = ({
   });
 
   const loadValueFromStorageFx = createEffect<void, string>(() => {
-    return JSON.parse(window.localStorage.getItem(name) ?? "");
+    return JSON.parse(
+      window.localStorage.getItem(`${formPrefix}_${name}`) ?? ""
+    );
   });
 
   const saveValueToStorageFx = createEffect<string, void>((value) => {
-    window.localStorage.setItem(name, JSON.stringify(value));
+    window.localStorage.setItem(`${formPrefix}_${name}`, JSON.stringify(value));
   });
 
   guard({
@@ -129,29 +151,71 @@ export const createTextInput = ({
   const setRef = (el: Nullable<HTMLInputElement>) => _setRef(el);
 
   // debug
-  $value.watch((v) => console.log({ v }));
-  $isPersist.watch((persist) => console.log({ persist }));
+  // $value.watch((v) => console.log({ v }));
+  // $isPersist.watch((persist) => console.log({ persist }));
+  // $error.watch((err) => console.log({ err }));
 
-  return { onChange, setRef, validate, error: $error, isValid: $isValid };
+  return {
+    onChange,
+    setRef,
+    validate,
+    error: $error,
+    isValid: $isValid,
+    isRequiredError: $isRequiredError,
+  };
 };
 
-const schema = z.string().min(1).min(10);
-
-const { validate, setRef, onChange, error } = createTextInput({
+const emailInput = createTextInput({
   name: "email",
+  formPrefix: "test",
   schema,
   persist: true,
 });
 
+const passInput = createTextInput({
+  name: "pass",
+  formPrefix: "test",
+  schema,
+  persist: true,
+});
+
+const $isValid = every({
+  predicate: true,
+  stores: [emailInput.isValid, passInput.isValid],
+});
+
+const submit = createEvent();
+
+sample({
+  clock: submit,
+  target: [emailInput.validate, passInput.validate],
+});
+
+$isValid.watch((isValid) => console.log({ isValid }));
+
 const App: React.FC = () => {
-  const err = useStore(error);
+  const handleSubmit = (evt: React.FormEvent<HTMLFormElement>) => {
+    evt.preventDefault();
+    submit();
+  };
+
   return (
     <div>
       <h1>Hello 12</h1>
-      <pre>{err?.message}</pre>
-      <input type="text" ref={(el) => setRef(el)} onChange={onChange} />
-      <pre>{Math.random()}</pre>
-      <button onClick={() => validate()}>Validate</button>
+      <form onSubmit={handleSubmit}>
+        <input
+          type="text"
+          ref={(el) => emailInput.setRef(el)}
+          onChange={emailInput.onChange}
+        />
+        <input
+          type="text"
+          ref={(el) => passInput.setRef(el)}
+          onChange={passInput.onChange}
+        />
+        <pre>{Math.random()}</pre>
+        <button type="submit">Submit</button>
+      </form>
     </div>
   );
 };
