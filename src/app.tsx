@@ -11,6 +11,7 @@ import type { Store } from "effector-root";
 import { combineEvents } from "patronum/combine-events";
 import { every } from "patronum/every";
 import * as Yup from "yup";
+import { useStore } from "effector-react";
 
 const schema = Yup.string()
   .test({
@@ -22,39 +23,38 @@ const schema = Yup.string()
 
 export type Nullable<T> = T | null;
 
+export type ValidationError = Partial<Yup.ValidationError>;
+
 type CreateTextInput = {
   name: string;
   schema?: Yup.StringSchema;
   formPrefix?: string;
   persist?: boolean;
+  transform?: (value: string) => string;
+  normalize?: (value: string) => string;
 };
-
-/**
- * TODO
- * - Добавить isValidating
- * - Добавить onBlur
- * - Добавить публичный setValue, setError
- * - Общий Reset
- * - Добавить опциональные функции transform и normalize
- */
 
 export const createTextInput = ({
   name,
   schema,
   formPrefix = "",
   persist = false,
+  transform = (v) => v,
+  normalize = (v) => v,
 }: CreateTextInput) => {
+  // Stores
   const $ref = createStore<Nullable<HTMLInputElement>>(null);
   const $value = createStore<string>("");
-  const $error = createStore<Nullable<Yup.ValidationError>>(null);
-  const $errorMessage = $error.map((err) => (err ? err.message : ""));
-  const $isRequiredError = $error.map((err) =>
-    err ? err.type === "required" : false
-  );
+  const $error = createStore<Nullable<ValidationError>>(null);
   const $isTouched = createStore<boolean>(false);
   const $isDirty = createStore<boolean>(false);
-  const $isValid = $error.map((err) => err === null);
   const $isPersist = createStore<boolean>(persist);
+
+  // Mapped Stores
+  const $normalizedValue = $value.map((value) => normalize(value));
+  const $isValid = $error.map((err) => err === null);
+  const $errorMessage = $error.map((err) => err?.message ?? "");
+  const $isRequiredError = $error.map((err) => err?.type === "required");
 
   const _setRef = createEvent<Nullable<HTMLInputElement>>();
   const _clearRef = createEvent();
@@ -62,7 +62,7 @@ export const createTextInput = ({
 
   const _setValue = createEvent<string>();
   const _clearValue = createEvent();
-  $value.on(_setValue, (_, v) => v).reset(_clearValue);
+  $value.on(_setValue, (_, v) => transform(v)).reset(_clearValue);
 
   const _setIsDirty = createEvent();
   const _clearIsDirty = createEvent();
@@ -83,19 +83,24 @@ export const createTextInput = ({
       return value;
     }
   );
+  const setError = createEvent<Nullable<ValidationError>>();
   const _clearError = createEvent();
   const validate = createEvent();
+  const $isValidating = validateFx.pending;
 
   $error
     .on(validateFx.failData, (_, err) => err)
+    .on(setError, (_, err) => err)
     .reset([validateFx.done, _clearError]);
 
+  // Start validation
   sample({
     clock: validate,
     source: $value,
     target: validateFx,
   });
 
+  // Set Input name
   guard({
     source: $ref,
     filter: (ref): ref is HTMLInputElement => ref instanceof HTMLInputElement,
@@ -104,6 +109,7 @@ export const createTextInput = ({
     ),
   });
 
+  // Persist methods
   const loadValueFromStorageFx = createEffect<void, string>(() => {
     return JSON.parse(
       window.localStorage.getItem(`${formPrefix}_${name}`) ?? ""
@@ -114,6 +120,7 @@ export const createTextInput = ({
     window.localStorage.setItem(`${formPrefix}_${name}`, JSON.stringify(value));
   });
 
+  // Load persist value on mount
   guard({
     source: [$ref, $isPersist],
     filter: ([ref, isPersist]) => ref !== null && isPersist,
@@ -122,17 +129,19 @@ export const createTextInput = ({
 
   $value.on(loadValueFromStorageFx.doneData, (_, v) => v);
 
+  // Set input value on success load persist value
   sample({
     clock: loadValueFromStorageFx.doneData,
     source: $ref as Store<HTMLInputElement>,
     fn: (ref, value) => ({ ref, value }),
     target: createEffect<{ ref: HTMLInputElement; value: string }, void>(
       ({ ref, value }) => {
-        ref.value = value;
+        ref.value = transform(value);
       }
     ),
   });
 
+  // Sync value with persist storage
   sample({
     clock: guard({
       clock: _setValue,
@@ -142,13 +151,56 @@ export const createTextInput = ({
     target: saveValueToStorageFx,
   });
 
+  // Public handlers
   const onChange = (evt: React.ChangeEvent<HTMLInputElement>) => {
     evt.preventDefault();
     _setValue(evt.target.value);
     _setIsDirty();
   };
 
+  const onBlur = (evt: React.FocusEvent<HTMLInputElement>) => {
+    evt.preventDefault();
+    _setIsTouched();
+  };
+
   const setRef = (el: Nullable<HTMLInputElement>) => _setRef(el);
+
+  // Common reset
+  const reset = createEvent();
+
+  sample({
+    clock: reset,
+    target: [_clearValue, _clearIsDirty, _clearIsTouched, _clearError],
+  });
+
+  // Imperative setValue
+  const setValue = createEvent<string>();
+
+  $value.on(setValue, (_, v) => transform(v));
+
+  sample({
+    clock: guard({
+      clock: setValue,
+      source: $ref,
+      filter: (ref): ref is HTMLInputElement => ref instanceof HTMLInputElement,
+    }),
+    source: $value,
+    fn: (value, ref) => ({ value, ref }),
+    target: createEffect<{ value: string; ref: HTMLInputElement }, void>(
+      ({ ref, value }) => {
+        ref.value = normalize(value);
+      }
+    ),
+  });
+
+  // Focus on element
+  const focus = createEvent();
+  guard({
+    clock: focus,
+    source: $ref,
+    filter: (ref): ref is HTMLInputElement => ref instanceof HTMLInputElement,
+    target: createEffect<HTMLInputElement, void>((ref) => ref.focus()),
+  });
 
   // debug
   // $value.watch((v) => console.log({ v }));
@@ -156,12 +208,28 @@ export const createTextInput = ({
   // $error.watch((err) => console.log({ err }));
 
   return {
-    onChange,
-    setRef,
-    validate,
+    // Stores
+    value: $value,
+    normalizedValue: $normalizedValue,
+    isTouched: $isTouched,
+    isDirty: $isDirty,
     error: $error,
+    errorMessage: $errorMessage,
     isValid: $isValid,
     isRequiredError: $isRequiredError,
+    isValidating: $isValidating,
+    // Events
+    validate,
+    reset,
+    setValue,
+    setError,
+    focus,
+    // Handlers
+    onChange,
+    onBlur,
+    setRef,
+    // Common
+    name,
   };
 };
 
@@ -199,8 +267,11 @@ const App: React.FC = () => {
     submit();
   };
 
+  const errorMessage = useStore(passInput.errorMessage);
+
   return (
     <div>
+      <pre>{errorMessage}</pre>
       <h1>Hello 12</h1>
       <form onSubmit={handleSubmit}>
         <input
@@ -216,6 +287,7 @@ const App: React.FC = () => {
         <pre>{Math.random()}</pre>
         <button type="submit">Submit</button>
       </form>
+      <button onClick={() => emailInput.focus()}>Focus</button>
     </div>
   );
 };
