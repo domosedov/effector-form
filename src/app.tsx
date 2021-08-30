@@ -1,18 +1,8 @@
 import * as React from "react";
-import {
-  createStore,
-  createEvent,
-  createEffect,
-  sample,
-  guard,
-  combine,
-} from "effector-root";
-import type { Store, Event } from "effector-root";
-import { combineEvents } from "patronum/combine-events";
-import { every } from "patronum/every";
 import * as Yup from "yup";
 import { useStore } from "effector-react";
-import { createTextInput } from "./shared/factories/create-text-input-model";
+import { createTextField } from "./shared/factories/create-text-field";
+import { createForm } from "./shared/factories/create-form";
 
 const schema = Yup.string()
   .test({
@@ -22,49 +12,28 @@ const schema = Yup.string()
   })
   .min(5);
 
-const createForm = () => {};
-
-const emailInput = createTextInput({
+const emailInput = createTextField({
   name: "email",
   formPrefix: "test",
   schema,
   persist: true,
 });
 
-const passInput = createTextInput({
+const passInput = createTextField({
   name: "pass",
   formPrefix: "test",
   schema,
   persist: true,
 });
 
-const $isValid = every({
-  predicate: true,
-  stores: [emailInput.isValid, passInput.isValid],
+const loginForm = createForm({
+  fields: [emailInput, passInput],
 });
-
-const submit = createEvent();
-
-sample({
-  clock: submit,
-  target: [emailInput.validate, passInput.validate],
-});
-
-$isValid.watch((isValid) => console.log({ isValid }));
-
-const runValidate = combineEvents({
-  events: [emailInput.validate, passInput.validate],
-});
-
-runValidate.watch((evt) => console.log(evt));
-
-emailInput.validate();
-// passInput.validate();
 
 const App: React.FC = () => {
   const handleSubmit = (evt: React.FormEvent<HTMLFormElement>) => {
     evt.preventDefault();
-    submit();
+    loginForm.submit();
   };
 
   const errorMessage = useStore(passInput.errorMessage);

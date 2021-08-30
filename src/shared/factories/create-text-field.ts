@@ -12,7 +12,7 @@ export type Nullable<T> = T | null;
 
 export type ValidationError = Partial<Yup.ValidationError>;
 
-export type TextInputModelParams = {
+export type TextFieldParams = {
   name: string;
   schema?: Yup.StringSchema;
   formPrefix?: string;
@@ -21,9 +21,12 @@ export type TextInputModelParams = {
   normalize?: (value: string) => string;
 };
 
-export type TextInputModel = {
+export type TextFieldModel = {
   value: Store<string>;
-  normalizedValue: Store<string>;
+  field: Store<{
+    key: string;
+    value: string;
+  }>;
   isTouched: Store<boolean>;
   isDirty: Store<boolean>;
   error: Store<Nullable<Partial<Yup.ValidationError>>>;
@@ -42,9 +45,9 @@ export type TextInputModel = {
   name: string;
 };
 
-export type CreateTextInput = (params: TextInputModelParams) => TextInputModel;
+export type CreateTextField = (params: TextFieldParams) => TextFieldModel;
 
-export const createTextInput: CreateTextInput = ({
+export const createTextField: CreateTextField = ({
   name,
   schema,
   formPrefix = "",
@@ -61,7 +64,10 @@ export const createTextInput: CreateTextInput = ({
   const $isPersist = createStore<boolean>(persist);
 
   // Mapped Stores
-  const $normalizedValue = $value.map((value) => normalize(value));
+  const $field = $value.map((value) => ({
+    key: name,
+    value: normalize(value),
+  }));
   const $isValid = $error.map((err) => err === null);
   const $errorMessage = $error.map((err) => err?.message ?? "");
   const $isRequiredError = $error.map((err) => err?.type === "required");
@@ -215,7 +221,7 @@ export const createTextInput: CreateTextInput = ({
   return {
     // Stores
     value: $value,
-    normalizedValue: $normalizedValue,
+    field: $field,
     isTouched: $isTouched,
     isDirty: $isDirty,
     error: $error,
